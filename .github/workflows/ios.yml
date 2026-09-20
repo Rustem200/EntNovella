@@ -17,6 +17,17 @@ jobs:
         with:
           lfs: true
 
+      - name: Проверить, что секреты доходят
+        env:
+          U: ${{ secrets.UNITY_USERNAME || secrets.UNITY_EMAIL }}
+          P: ${{ secrets.UNITY_PASSWORD }}
+        run: |
+          echo "длина логина: ${#U}, длина пароля: ${#P}"
+          if [ -z "$U" ] || [ -z "$P" ]; then
+            echo "::error::Секреты не пришли. Проверь, что они заведены в Repository secrets (не Environment) и называются UNITY_USERNAME и UNITY_PASSWORD."
+            exit 1
+          fi
+
       - name: Поставить Unity с модулем iOS
         uses: RageAgainstThePixel/unity-setup@v1
         with:
@@ -26,7 +37,7 @@ jobs:
         uses: RageAgainstThePixel/activate-unity-license@v2
         with:
           license: Personal
-          username: ${{ secrets.UNITY_USERNAME }}
+          username: ${{ secrets.UNITY_USERNAME || secrets.UNITY_EMAIL }}
           password: ${{ secrets.UNITY_PASSWORD }}
 
       - name: Unity -> Xcode-проект
