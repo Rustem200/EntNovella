@@ -29,9 +29,11 @@ jobs:
           fi
 
       - name: Поставить Unity с модулем iOS
-        uses: RageAgainstThePixel/unity-setup@v1
+        uses: RageAgainstThePixel/unity-setup@v2
         with:
+          unity-version: 6000.3.12f1
           build-targets: iOS
+          cache-installation: true
 
       - name: Активировать лицензию Personal
         uses: RageAgainstThePixel/activate-unity-license@v2
