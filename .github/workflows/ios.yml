@@ -1,14 +1,15 @@
 name: iOS
 
 # Запуск вручную: вкладка Actions -> iOS -> Run workflow.
+# Нужны секреты UNITY_USERNAME (почта аккаунта Unity) и UNITY_PASSWORD.
 on:
   workflow_dispatch:
 
 jobs:
   build:
     name: Собрать .ipa
-    runs-on: macos-14
-    timeout-minutes: 90
+    runs-on: macos-15
+    timeout-minutes: 120
 
     steps:
       - name: Забрать исходники
@@ -16,28 +17,30 @@ jobs:
         with:
           lfs: true
 
-      - name: Кэш Library (ускоряет повторные сборки)
-        uses: actions/cache@v4
+      - name: Поставить Unity с модулем iOS
+        uses: RageAgainstThePixel/unity-setup@v1
         with:
-          path: Library
-          key: Library-iOS-${{ hashFiles('Assets/**', 'Packages/**', 'ProjectSettings/**') }}
-          restore-keys: |
-            Library-iOS-
+          build-targets: iOS
+
+      - name: Активировать лицензию Personal
+        uses: RageAgainstThePixel/activate-unity-license@v2
+        with:
+          license: Personal
+          username: ${{ secrets.UNITY_USERNAME }}
+          password: ${{ secrets.UNITY_PASSWORD }}
 
       - name: Unity -> Xcode-проект
-        uses: game-ci/unity-builder@v4
-        env:
-          UNITY_EMAIL: ${{ secrets.UNITY_EMAIL }}
-          UNITY_PASSWORD: ${{ secrets.UNITY_PASSWORD }}
-          UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
-        with:
-          unityVersion: 6000.3.12f1
-          targetPlatform: iOS
-          allowDirtyBuild: true
+        run: |
+          "$UNITY_EDITOR_PATH" \
+            -quit -batchmode -nographics \
+            -projectPath "$GITHUB_WORKSPACE" \
+            -buildTarget iOS \
+            -executeMethod CIBuild.BuildIOS \
+            -logFile -
 
       - name: Xcode -> архив без подписи
         run: |
-          cd build/iOS/iOS
+          cd build/iOS
           xcodebuild \
             -scheme Unity-iPhone \
             -configuration Release \
@@ -52,7 +55,7 @@ jobs:
 
       - name: Упаковать .ipa
         run: |
-          cd build/iOS/iOS
+          cd build/iOS
           mkdir -p Payload
           cp -R app.xcarchive/Products/Applications/*.app Payload/
           zip -qry EntNovella.ipa Payload
@@ -61,5 +64,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: EntNovella-ipa
-          path: build/iOS/iOS/EntNovella.ipa
+          path: build/iOS/EntNovella.ipa
           retention-days: 30
