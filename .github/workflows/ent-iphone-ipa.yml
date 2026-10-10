@@ -1,0 +1,50 @@
+name: ENT iPhone IPA
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ent-ios-preview
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 90
+    steps:
+      - name: Download exported Xcode project
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir source
+          gh release download ent-ios-source-20261010 --repo "$GITHUB_REPOSITORY" --pattern 'ENT-Xcode.zip.part*' --dir source
+          cat source/ENT-Xcode.zip.part* > source/ENT-Xcode.zip
+          unzip -q source/ENT-Xcode.zip -d xcode
+      - name: Restore executable permissions
+        run: |
+          find xcode -type f -name '*.sh' -exec chmod +x {} +
+          if [ -d xcode/Il2CppOutputProject/IL2CPP/build/deploy ]; then
+            chmod -R +x xcode/Il2CppOutputProject/IL2CPP/build/deploy
+          fi
+      - name: Build for iPhone without signing
+        run: |
+          set -o pipefail
+          xcodebuild -project xcode/Unity-iPhone.xcodeproj -scheme Unity-iPhone -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' -archivePath "$PWD/ENT.xcarchive" archive CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" | tee xcode-build.log
+      - name: Package IPA for local signing
+        run: |
+          mkdir Payload
+          cp -R ENT.xcarchive/Products/Applications/*.app Payload/
+          /usr/bin/ditto -c -k --keepParent Payload EntNovella.ipa
+      - name: Downloadable IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: EntNovella-IPA
+          path: EntNovella.ipa
+          compression-level: 0
+          retention-days: 3
+      - name: Build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: iOS-build-log
+          path: xcode-build.log
+          retention-days: 3
