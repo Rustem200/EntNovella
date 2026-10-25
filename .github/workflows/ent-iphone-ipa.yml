@@ -22,13 +22,15 @@ jobs:
       - name: Restore executable permissions
         run: |
           find xcode -type f -name '*.sh' -exec chmod +x {} +
+          find xcode -type f -name 'usymtool*' -exec chmod +x {} +
+          find xcode -type f -exec touch {} +
           if [ -d xcode/Il2CppOutputProject/IL2CPP/build/deploy ]; then
             chmod -R +x xcode/Il2CppOutputProject/IL2CPP/build/deploy
           fi
       - name: Build for iPhone without signing
         run: |
           set -o pipefail
-          xcodebuild -project xcode/Unity-iPhone.xcodeproj -scheme Unity-iPhone -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' -archivePath "$PWD/ENT.xcarchive" archive CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" | tee xcode-build.log
+          xcodebuild -project xcode/Unity-iPhone.xcodeproj -scheme Unity-iPhone -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' -archivePath "$PWD/ENT.xcarchive" archive CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" 2>&1 | tee xcode-build.log
       - name: Package IPA for local signing
         run: |
           mkdir Payload
