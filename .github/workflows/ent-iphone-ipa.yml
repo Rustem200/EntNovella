@@ -1,6 +1,10 @@
 name: ENT iPhone IPA
 on:
   workflow_dispatch:
+    inputs:
+      source:
+        description: Релиз с Xcode-экспортом (ENT-Xcode.zip.part*)
+        default: ent-ios-source-20261029
 permissions:
   contents: read
 concurrency:
@@ -16,7 +20,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           mkdir source
-          gh release download ent-ios-source-20261026 --repo "$GITHUB_REPOSITORY" --pattern 'ENT-Xcode.zip.part*' --dir source
+          gh release download "${{ inputs.source }}" --repo "$GITHUB_REPOSITORY" --pattern 'ENT-Xcode.zip.part*' --dir source
           cat source/ENT-Xcode.zip.part* > source/ENT-Xcode.zip
           unzip -q source/ENT-Xcode.zip -d xcode
       - name: Restore executable permissions
