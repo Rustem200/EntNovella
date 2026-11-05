@@ -31,6 +31,13 @@ jobs:
           if [ -d xcode/Il2CppOutputProject/IL2CPP/build/deploy ]; then
             chmod -R +x xcode/Il2CppOutputProject/IL2CPP/build/deploy
           fi
+      - name: Use the newest Xcode
+        run: |
+          # LevelPlay 9.6 is built with Swift 6.2 and links only with Xcode 26 or newer.
+          XCODE=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)
+          if [ -z "$XCODE" ]; then XCODE=$(ls -d /Applications/Xcode_*.app | sort -V | tail -1); fi
+          sudo xcode-select -s "$XCODE"
+          xcodebuild -version
       - name: Install ad SDK (CocoaPods)
         run: |
           cd xcode
