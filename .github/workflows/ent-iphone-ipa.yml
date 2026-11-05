@@ -31,10 +31,28 @@ jobs:
           if [ -d xcode/Il2CppOutputProject/IL2CPP/build/deploy ]; then
             chmod -R +x xcode/Il2CppOutputProject/IL2CPP/build/deploy
           fi
+      - name: Install ad SDK (CocoaPods)
+        run: |
+          cd xcode
+          # LevelPlay's native SDK goes into UnityFramework, as Unity's dependency resolver would set it up.
+          if [ ! -f Podfile ]; then
+            cat > Podfile <<'POD'
+          source 'https://cdn.cocoapods.org/'
+          platform :ios, '15.0'
+          target 'UnityFramework' do
+            pod 'IronSourceSDK', '9.6.0.0'
+          end
+          target 'Unity-iPhone' do
+          end
+          use_frameworks! :linkage => :static
+          POD
+          fi
+          cat Podfile
+          pod install --repo-update
       - name: Build for iPhone without signing
         run: |
           set -o pipefail
-          xcodebuild -project xcode/Unity-iPhone.xcodeproj -scheme Unity-iPhone -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' -archivePath "$PWD/ENT.xcarchive" archive CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" 2>&1 | tee xcode-build.log
+          xcodebuild -workspace xcode/Unity-iPhone.xcworkspace -scheme Unity-iPhone -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' -archivePath "$PWD/ENT.xcarchive" archive CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" 2>&1 | tee xcode-build.log
       - name: Package IPA for local signing
         run: |
           mkdir Payload
