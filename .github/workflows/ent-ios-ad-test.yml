@@ -1,0 +1,77 @@
+name: ENT ad test (iOS Simulator)
+# Runs the game in the iOS Simulator with ENT_AD_TEST set: LevelPlay starts with the real app key and ad units,
+# and the ad is shown as soon as it loads. Screenshots + logs show whether ads arrive and, if not, the exact error.
+on:
+  workflow_dispatch:
+    inputs:
+      source:
+        description: Релиз с Xcode-экспортом для симулятора (ENT-Sim.zip.part*)
+        default: ent-ios-sim-20261107
+permissions:
+  contents: read
+jobs:
+  adtest:
+    runs-on: macos-15
+    timeout-minutes: 90
+    steps:
+      - name: Download simulator Xcode project
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir source
+          gh release download "${{ inputs.source }}" --repo "$GITHUB_REPOSITORY" --pattern 'ENT-Sim.zip.part*' --dir source
+          cat source/ENT-Sim.zip.part* > source/ENT-Sim.zip
+          unzip -q source/ENT-Sim.zip -d xcode
+          find xcode -type f -name '*.sh' -exec chmod +x {} +
+          find xcode -type f -name 'usymtool*' -exec chmod +x {} +
+          find xcode -type f -exec touch {} +
+          if [ -d xcode/Il2CppOutputProject/IL2CPP/build/deploy ]; then chmod -R +x xcode/Il2CppOutputProject/IL2CPP/build/deploy; fi
+      - name: Use the newest Xcode
+        run: |
+          XCODE=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)
+          if [ -z "$XCODE" ]; then XCODE=$(ls -d /Applications/Xcode_*.app | sort -V | tail -1); fi
+          sudo xcode-select -s "$XCODE"
+          xcodebuild -version
+          xcrun simctl list runtimes
+      - name: Install ad SDK (CocoaPods)
+        run: |
+          cd xcode
+          cat Podfile
+          pod install --repo-update
+      - name: Build for the Simulator
+        run: |
+          set -o pipefail
+          xcodebuild -workspace xcode/Unity-iPhone.xcworkspace -scheme Unity-iPhone -configuration Release -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' -derivedDataPath dd build CODE_SIGNING_ALLOWED=NO ARCHS=arm64 ONLY_ACTIVE_ARCH=NO 2>&1 | tee xcode-build.log | grep -E "error:|warning: .*Pods|BUILD" || true
+          ls dd/Build/Products/Release-iphonesimulator/
+      - name: Run and watch the ads
+        run: |
+          APP=$(ls -d dd/Build/Products/Release-iphonesimulator/*.app | head -1)
+          BID=$(/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' "$APP/Info.plist")
+          EXE=$(/usr/libexec/PlistBuddy -c 'Print CFBundleExecutable' "$APP/Info.plist")
+          DEV=$(xcrun simctl list devices available -j | python3 -c "import json,sys;d=json.load(sys.stdin)['devices'];c=[x for r,l in d.items() if 'iOS' in r for x in l if x['name'].startswith('iPhone')];print(c[-1]['udid'])")
+          echo "app $APP id $BID device $DEV"
+          xcrun simctl boot "$DEV"; xcrun simctl bootstatus "$DEV" -b
+          xcrun simctl install "$DEV" "$APP"
+          mkdir -p shots
+          for MODE in interstitial rewarded; do
+            xcrun simctl spawn "$DEV" log stream --level debug --style compact --predicate "process == '$EXE'" > "native-$MODE.log" 2>&1 &
+            LOGPID=$!
+            SIMCTL_CHILD_ENT_AD_TEST=$MODE xcrun simctl launch --terminate-running-process --stdout="$PWD/app-$MODE.out" --stderr="$PWD/app-$MODE.err" "$DEV" "$BID"
+            for i in $(seq -w 1 18); do sleep 8; xcrun simctl io "$DEV" screenshot "shots/$MODE-$i.png" >/dev/null 2>&1 || true; done
+            kill $LOGPID || true
+            xcrun simctl terminate "$DEV" "$BID" || true
+            echo "===== $MODE: game ad log ====="
+            cat "app-$MODE.out" "app-$MODE.err" | grep -a "ENT Ads" || true
+          done
+      - name: Results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ad-test
+          path: |
+            shots
+            app-*.out
+            app-*.err
+            native-*.log
+            xcode-build.log
+          retention-days: 5
