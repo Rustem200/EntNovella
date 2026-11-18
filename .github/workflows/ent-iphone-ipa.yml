@@ -60,16 +60,13 @@ jobs:
               int n = 0, bad = 0; double worst = 0, total = 0, slowest = 0;
               for (NSDictionary* e in list) {
                 NSString* f = e[@"f"]; NSData* d = files[f];
-                if (!d) { d = [NSData dataWithContentsOfFile:[root stringByAppendingPathComponent:f] options:NSDataReadingMappedIfSafe error:nil]; if (!d) { printf("missing %s
-", f.UTF8String); return 2; } files[f] = d; }
+                if (!d) { d = [NSData dataWithContentsOfFile:[root stringByAppendingPathComponent:f] options:NSDataReadingMappedIfSafe error:nil]; if (!d) { printf("missing %s\n", f.UTF8String); return 2; } files[f] = d; }
                 long o = [e[@"o"] longValue]; int l = [e[@"l"] intValue], w = 0, h = 0, c = 0;
                 NSDate* start = [NSDate date];
                 unsigned char* px = ENTImageDecode((const unsigned char*)d.bytes + o, l, &w, &h, &c);
                 double ms = -[start timeIntervalSinceNow] * 1000; total += ms; if (ms > slowest) slowest = ms; n++;
-                if (!px) { printf("FAIL decode %s @%ld
-", f.UTF8String, o); bad++; continue; }
-                if (w != [e[@"w"] intValue] || h != [e[@"h"] intValue] || c != [e[@"c"] intValue]) { printf("FAIL shape %s @%ld %dx%dx%d
-", f.UTF8String, o, w, h, c); bad++; ENTImageFree(px); continue; }
+                if (!px) { printf("FAIL decode %s @%ld\n", f.UTF8String, o); bad++; continue; }
+                if (w != [e[@"w"] intValue] || h != [e[@"h"] intValue] || c != [e[@"c"] intValue]) { printf("FAIL shape %s @%ld %dx%dx%d\n", f.UTF8String, o, w, h, c); bad++; ENTImageFree(px); continue; }
                 NSArray* m = e[@"m"]; double diff = 0; int k = 0;
                 for (int by = 0; by < 4; by++) for (int bx = 0; bx < 4; bx++) {
                   int x0 = bx * w / 4, x1 = MAX(x0 + 1, (bx + 1) * w / 4), y0 = by * h / 4, y1 = MAX(y0 + 1, (by + 1) * h / 4);
@@ -78,12 +75,10 @@ jobs:
                   for (int q = 0; q < c; q++) { double v = fabs(s[q] / cnt - [m[k++] doubleValue]); if (v > diff) diff = v; }
                 }
                 if (diff > worst) worst = diff;
-                if (diff > 3) { printf("FAIL pixels %s @%ld: block mean off by %.2f
-", f.UTF8String, o, diff); bad++; }
+                if (diff > 3) { printf("FAIL pixels %s @%ld: block mean off by %.2f\n", f.UTF8String, o, diff); bad++; }
                 ENTImageFree(px);
               }
-              printf("decoded %d pictures, %d failed, worst block difference %.2f, average %.1f ms, slowest %.1f ms
-", n, bad, worst, total / MAX(n, 1), slowest);
+              printf("decoded %d pictures, %d failed, worst block difference %.2f, average %.1f ms, slowest %.1f ms\n", n, bad, worst, total / MAX(n, 1), slowest);
               return bad ? 1 : 0;
             }
           }
