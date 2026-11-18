@@ -1,0 +1,106 @@
+name: ENT App Store upload
+# Signs the exported Xcode project for the App Store and uploads it to App Store Connect (TestFlight / review).
+# Needs the team's App Store Connect API key (Users and Access → Integrations → Team Keys, role App Manager or Admin)
+# in the repository secrets ASC_KEY_ID, ASC_ISSUER_ID and ASC_KEY_P8 (the .p8 file's text). Signing is automatic:
+# Xcode creates or reuses the distribution certificate and the App Store profile through that key.
+on:
+  workflow_dispatch:
+    inputs:
+      source:
+        description: Релиз с Xcode-экспортом (ENT-Xcode.zip.part*)
+        required: true
+      team:
+        description: Team ID команды (Membership details на developer.apple.com)
+        required: true
+      version:
+        description: Версия в App Store (CFBundleShortVersionString)
+        default: '1.0'
+      build:
+        description: Номер сборки (растёт с каждой загрузкой)
+        default: '1'
+permissions:
+  contents: read
+concurrency:
+  group: ent-appstore
+  cancel-in-progress: false
+jobs:
+  upload:
+    runs-on: macos-15
+    timeout-minutes: 120
+    steps:
+      - name: Download exported Xcode project
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir source
+          gh release download "${{ inputs.source }}" --repo "$GITHUB_REPOSITORY" --pattern 'ENT-Xcode.zip.part*' --dir source
+          cat source/ENT-Xcode.zip.part* > source/ENT-Xcode.zip
+          unzip -q source/ENT-Xcode.zip -d xcode
+          find xcode -type f -name '*.sh' -exec chmod +x {} +
+          find xcode -type f -name 'usymtool*' -exec chmod +x {} +
+          find xcode -type f -exec touch {} +
+          if [ -d xcode/Il2CppOutputProject/IL2CPP/build/deploy ]; then chmod -R +x xcode/Il2CppOutputProject/IL2CPP/build/deploy; fi
+      - name: Use the newest Xcode
+        run: |
+          XCODE=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)
+          if [ -z "$XCODE" ]; then XCODE=$(ls -d /Applications/Xcode_*.app | sort -V | tail -1); fi
+          sudo xcode-select -s "$XCODE"
+          xcodebuild -version
+      - name: Install ad SDK (CocoaPods)
+        run: |
+          cd xcode
+          cat Podfile
+          pod install --repo-update
+      - name: App Store Connect API key
+        env:
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+        run: |
+          if [ -z "$ASC_KEY_P8" ] || [ -z "$ASC_KEY_ID" ]; then echo "Secrets ASC_KEY_ID / ASC_ISSUER_ID / ASC_KEY_P8 are not set"; exit 1; fi
+          mkdir -p "$RUNNER_TEMP/asc"
+          printf '%s' "$ASC_KEY_P8" > "$RUNNER_TEMP/asc/AuthKey_$ASC_KEY_ID.p8"
+      - name: Archive (signed for the App Store)
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          set -o pipefail
+          xcodebuild -workspace xcode/Unity-iPhone.xcworkspace -scheme Unity-iPhone -configuration Release -sdk iphoneos \
+            -destination 'generic/platform=iOS' -archivePath "$PWD/ENT.xcarchive" archive \
+            -allowProvisioningUpdates -authenticationKeyPath "$RUNNER_TEMP/asc/AuthKey_$ASC_KEY_ID.p8" \
+            -authenticationKeyID "$ASC_KEY_ID" -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
+            DEVELOPMENT_TEAM="${{ inputs.team }}" CODE_SIGN_STYLE=Automatic \
+            MARKETING_VERSION="${{ inputs.version }}" CURRENT_PROJECT_VERSION="${{ inputs.build }}" 2>&1 | tee xcode-archive.log
+      - name: Upload to App Store Connect
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          set -o pipefail
+          cat > ExportOptions.plist <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>method</key><string>app-store-connect</string>
+            <key>destination</key><string>upload</string>
+            <key>teamID</key><string>${{ inputs.team }}</string>
+            <key>signingStyle</key><string>automatic</string>
+            <key>uploadSymbols</key><true/>
+            <key>manageAppVersionAndBuildNumber</key><false/>
+          </dict></plist>
+          PLIST
+          xcodebuild -exportArchive -archivePath "$PWD/ENT.xcarchive" -exportOptionsPlist ExportOptions.plist -exportPath export \
+            -allowProvisioningUpdates -authenticationKeyPath "$RUNNER_TEMP/asc/AuthKey_$ASC_KEY_ID.p8" \
+            -authenticationKeyID "$ASC_KEY_ID" -authenticationKeyIssuerID "$ASC_ISSUER_ID" 2>&1 | tee xcode-upload.log
+      - name: Remove the key
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/asc"
+      - name: Logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: appstore-logs
+          path: |
+            xcode-archive.log
+            xcode-upload.log
+          retention-days: 5

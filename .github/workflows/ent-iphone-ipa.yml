@@ -38,6 +38,58 @@ jobs:
           if [ -z "$XCODE" ]; then XCODE=$(ls -d /Applications/Xcode_*.app | sort -V | tail -1); fi
           sudo xcode-select -s "$XCODE"
           xcodebuild -version
+      - name: Check the frame decoder (ImageIO, AVIF)
+        run: |
+          # The iPhone build ships its frames in AVIF (Tools/rebuild/pack.js --ios). The game's own decoder
+          # (ENTImageDecode.mm) is compiled here for macOS, which has the same ImageIO, and must give back every
+          # picture of the pack: size, channels and 4x4 block means against the values sharp computed (check.json).
+          if [ ! -f xcode/ENTPackCheck/check.json ]; then echo "No AVIF pack in this export"; exit 0; fi
+          MM=$(find xcode -name ENTImageDecode.mm | head -1)
+          echo "decoder: $MM"
+          cat > dectest.mm <<'SRC'
+          #import <Foundation/Foundation.h>
+          #include <stdio.h>
+          #include <math.h>
+          extern "C" unsigned char* ENTImageDecode(const unsigned char* data, int length, int* width, int* height, int* channels);
+          extern "C" void ENTImageFree(unsigned char* pixels);
+          int main(int argc, char** argv) {
+            @autoreleasepool {
+              NSString* root = [NSString stringWithUTF8String:argv[1]];
+              NSArray* list = [NSJSONSerialization JSONObjectWithData:[NSData dataWithContentsOfFile:[NSString stringWithUTF8String:argv[2]]] options:0 error:nil];
+              NSMutableDictionary* files = [NSMutableDictionary dictionary];
+              int n = 0, bad = 0; double worst = 0, total = 0, slowest = 0;
+              for (NSDictionary* e in list) {
+                NSString* f = e[@"f"]; NSData* d = files[f];
+                if (!d) { d = [NSData dataWithContentsOfFile:[root stringByAppendingPathComponent:f] options:NSDataReadingMappedIfSafe error:nil]; if (!d) { printf("missing %s
+", f.UTF8String); return 2; } files[f] = d; }
+                long o = [e[@"o"] longValue]; int l = [e[@"l"] intValue], w = 0, h = 0, c = 0;
+                NSDate* start = [NSDate date];
+                unsigned char* px = ENTImageDecode((const unsigned char*)d.bytes + o, l, &w, &h, &c);
+                double ms = -[start timeIntervalSinceNow] * 1000; total += ms; if (ms > slowest) slowest = ms; n++;
+                if (!px) { printf("FAIL decode %s @%ld
+", f.UTF8String, o); bad++; continue; }
+                if (w != [e[@"w"] intValue] || h != [e[@"h"] intValue] || c != [e[@"c"] intValue]) { printf("FAIL shape %s @%ld %dx%dx%d
+", f.UTF8String, o, w, h, c); bad++; ENTImageFree(px); continue; }
+                NSArray* m = e[@"m"]; double diff = 0; int k = 0;
+                for (int by = 0; by < 4; by++) for (int bx = 0; bx < 4; bx++) {
+                  int x0 = bx * w / 4, x1 = MAX(x0 + 1, (bx + 1) * w / 4), y0 = by * h / 4, y1 = MAX(y0 + 1, (by + 1) * h / 4);
+                  double s[4] = {0, 0, 0, 0}; long cnt = 0;
+                  for (int y = y0; y < MIN(y1, h); y++) for (int x = x0; x < MIN(x1, w); x++) { const unsigned char* p = px + ((long)(h - 1 - y) * w + x) * c; for (int q = 0; q < c; q++) s[q] += p[q]; cnt++; }
+                  for (int q = 0; q < c; q++) { double v = fabs(s[q] / cnt - [m[k++] doubleValue]); if (v > diff) diff = v; }
+                }
+                if (diff > worst) worst = diff;
+                if (diff > 3) { printf("FAIL pixels %s @%ld: block mean off by %.2f
+", f.UTF8String, o, diff); bad++; }
+                ENTImageFree(px);
+              }
+              printf("decoded %d pictures, %d failed, worst block difference %.2f, average %.1f ms, slowest %.1f ms
+", n, bad, worst, total / MAX(n, 1), slowest);
+              return bad ? 1 : 0;
+            }
+          }
+          SRC
+          clang++ -O2 dectest.mm "$MM" -o dectest -framework Foundation -framework ImageIO -framework Accelerate -framework CoreGraphics
+          ./dectest xcode/Data/Raw/ENTFigmaMotion_20261003 xcode/ENTPackCheck/check.json
       - name: Install ad SDK (CocoaPods)
         run: |
           cd xcode
@@ -45,7 +97,7 @@ jobs:
           if [ ! -f Podfile ]; then
             cat > Podfile <<'POD'
           source 'https://cdn.cocoapods.org/'
-          platform :ios, '15.0'
+          platform :ios, '16.0'
           target 'UnityFramework' do
             pod 'IronSourceSDK', '9.6.0.0'
           end
