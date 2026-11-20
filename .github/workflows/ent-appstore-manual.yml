@@ -1,0 +1,174 @@
+name: ENT App Store upload (manual signing)
+# Signs the exported Xcode project with the team's Apple Distribution certificate and App Store profile,
+# then uploads the IPA to App Store Connect with an Apple ID and an app-specific password (no API key needed).
+# Repository secrets:
+#   DIST_P12_BASE64         base64 of the .p12 (Apple Distribution certificate + private key)
+#   DIST_P12_PASSWORD       password of that .p12
+#   APPSTORE_PROFILE_BASE64 base64 of the App Store .mobileprovision for kz.simplesoft.entnovella
+#   APPLE_ID                Apple ID e-mail of a team member (Admin / App Manager)
+#   APPLE_APP_PASSWORD      app-specific password of that Apple ID (appleid.apple.com → Sign-In and Security)
+on:
+  workflow_dispatch:
+    inputs:
+      source:
+        description: Релиз с Xcode-экспортом (ENT-Xcode.zip.part*)
+        required: true
+        default: ent-ios-source-20261119
+      team:
+        description: Team ID
+        default: 79KN6J3H58
+      version:
+        description: Версия в App Store (CFBundleShortVersionString)
+        default: '1.0'
+      build:
+        description: Номер сборки (растёт с каждой загрузкой)
+        default: '1'
+      upload:
+        description: Загрузить в App Store Connect (false = только собрать IPA)
+        type: boolean
+        default: true
+permissions:
+  contents: read
+concurrency:
+  group: ent-appstore
+  cancel-in-progress: false
+jobs:
+  upload:
+    runs-on: macos-15
+    timeout-minutes: 120
+    steps:
+      - name: Download exported Xcode project
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir source
+          gh release download "${{ inputs.source }}" --repo "$GITHUB_REPOSITORY" --pattern 'ENT-Xcode.zip.part*' --dir source
+          cat source/ENT-Xcode.zip.part* > source/ENT-Xcode.zip
+          unzip -q source/ENT-Xcode.zip -d xcode
+          find xcode -type f -name '*.sh' -exec chmod +x {} +
+          find xcode -type f -name 'usymtool*' -exec chmod +x {} +
+          find xcode -type f -exec touch {} +
+          if [ -d xcode/Il2CppOutputProject/IL2CPP/build/deploy ]; then chmod -R +x xcode/Il2CppOutputProject/IL2CPP/build/deploy; fi
+      - name: Use the newest Xcode
+        run: |
+          XCODE=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)
+          if [ -z "$XCODE" ]; then XCODE=$(ls -d /Applications/Xcode_*.app | sort -V | tail -1); fi
+          sudo xcode-select -s "$XCODE"
+          xcodebuild -version
+      - name: Install ad SDK (CocoaPods)
+        run: |
+          cd xcode
+          pod install --repo-update
+      - name: Install certificate and profile
+        env:
+          DIST_P12_BASE64: ${{ secrets.DIST_P12_BASE64 }}
+          DIST_P12_PASSWORD: ${{ secrets.DIST_P12_PASSWORD }}
+          APPSTORE_PROFILE_BASE64: ${{ secrets.APPSTORE_PROFILE_BASE64 }}
+        run: |
+          for v in DIST_P12_BASE64 DIST_P12_PASSWORD APPSTORE_PROFILE_BASE64; do
+            if [ -z "${!v}" ]; then echo "Secret $v is not set"; exit 1; fi
+          done
+          KC="$RUNNER_TEMP/ent-signing.keychain-db"; KCP=$(uuidgen)
+          echo "$DIST_P12_BASE64" | base64 --decode > "$RUNNER_TEMP/dist.p12"
+          security create-keychain -p "$KCP" "$KC"
+          security set-keychain-settings -lut 21600 "$KC"
+          security unlock-keychain -p "$KCP" "$KC"
+          security import "$RUNNER_TEMP/dist.p12" -k "$KC" -P "$DIST_P12_PASSWORD" -A -t cert -f pkcs12
+          security set-key-partition-list -S apple-tool:,apple: -k "$KCP" "$KC" >/dev/null
+          security list-keychains -d user -s "$KC" $(security list-keychains -d user | tr -d '"')
+          security find-identity -v -p codesigning "$KC"
+          rm -f "$RUNNER_TEMP/dist.p12"
+          echo "$APPSTORE_PROFILE_BASE64" | base64 --decode > "$RUNNER_TEMP/profile.mobileprovision"
+          security cms -D -i "$RUNNER_TEMP/profile.mobileprovision" > "$RUNNER_TEMP/profile.plist"
+          UUID=$(/usr/libexec/PlistBuddy -c 'Print :UUID' "$RUNNER_TEMP/profile.plist")
+          NAME=$(/usr/libexec/PlistBuddy -c 'Print :Name' "$RUNNER_TEMP/profile.plist")
+          for d in "$HOME/Library/MobileDevice/Provisioning Profiles" "$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles"; do
+            mkdir -p "$d"; cp "$RUNNER_TEMP/profile.mobileprovision" "$d/$UUID.mobileprovision"
+          done
+          echo "PROFILE_UUID=$UUID" >> "$GITHUB_ENV"
+          echo "Profile: $NAME ($UUID)"
+      - name: Manual signing for the app target, no export-compliance prompt
+        run: |
+          /usr/libexec/PlistBuddy -c 'Delete :ITSAppUsesNonExemptEncryption' xcode/Info.plist 2>/dev/null || true
+          /usr/libexec/PlistBuddy -c 'Add :ITSAppUsesNonExemptEncryption bool false' xcode/Info.plist
+          cat > sign.rb <<'RUBY'
+          require 'xcodeproj'
+          team, uuid = ARGV
+          project = Xcodeproj::Project.open('xcode/Unity-iPhone.xcodeproj')
+          project.targets.each do |t|
+            t.build_configurations.each do |c|
+              s = c.build_settings
+              s['DEVELOPMENT_TEAM'] = team
+              s['CODE_SIGN_STYLE'] = 'Manual'
+              if t.name == 'Unity-iPhone'
+                s['CODE_SIGN_IDENTITY'] = 'Apple Distribution'
+                s['CODE_SIGN_IDENTITY[sdk=iphoneos*]'] = 'Apple Distribution'
+                s['PROVISIONING_PROFILE_SPECIFIER'] = uuid
+                s['PROVISIONING_PROFILE'] = uuid
+              else
+                s['CODE_SIGNING_ALLOWED'] = 'NO'
+                s['CODE_SIGNING_REQUIRED'] = 'NO'
+                s['PROVISIONING_PROFILE_SPECIFIER'] = ''
+              end
+            end
+            puts "#{t.name}: manual"
+          end
+          project.save
+          RUBY
+          ruby sign.rb "${{ inputs.team }}" "$PROFILE_UUID"
+      - name: Archive
+        run: |
+          set -o pipefail
+          xcodebuild -workspace xcode/Unity-iPhone.xcworkspace -scheme Unity-iPhone -configuration Release -sdk iphoneos \
+            -destination 'generic/platform=iOS' -archivePath "$PWD/ENT.xcarchive" archive \
+            MARKETING_VERSION="${{ inputs.version }}" CURRENT_PROJECT_VERSION="${{ inputs.build }}" 2>&1 | tee xcode-archive.log | grep -E "error:|warning: .*sign|ARCHIVE|Signing Identity|Provisioning Profile" || true
+          test -d ENT.xcarchive/Products/Applications
+      - name: Export signed IPA
+        run: |
+          set -o pipefail
+          cat > ExportOptions.plist <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>method</key><string>app-store-connect</string>
+            <key>destination</key><string>export</string>
+            <key>teamID</key><string>${{ inputs.team }}</string>
+            <key>signingStyle</key><string>manual</string>
+            <key>signingCertificate</key><string>Apple Distribution</string>
+            <key>provisioningProfiles</key><dict>
+              <key>kz.simplesoft.entnovella</key><string>$PROFILE_UUID</string>
+            </dict>
+            <key>uploadSymbols</key><true/>
+            <key>manageAppVersionAndBuildNumber</key><false/>
+          </dict></plist>
+          PLIST
+          xcodebuild -exportArchive -archivePath "$PWD/ENT.xcarchive" -exportOptionsPlist ExportOptions.plist -exportPath export 2>&1 | tee xcode-export.log
+          ls -la export
+          IPA=$(ls export/*.ipa | head -1); echo "IPA=$IPA" >> "$GITHUB_ENV"
+          unzip -q -o "$IPA" -d ipa_check
+          codesign -dvv ipa_check/Payload/*.app 2>&1 | grep -E "Authority|TeamIdentifier|Identifier"
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' -c 'Print :CFBundleVersion' -c 'Print :CFBundleDisplayName' ipa_check/Payload/*.app/Info.plist
+      - name: Upload to App Store Connect
+        if: inputs.upload
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          if [ -z "$APPLE_ID" ] || [ -z "$APPLE_APP_PASSWORD" ]; then echo "Secrets APPLE_ID / APPLE_APP_PASSWORD are not set"; exit 1; fi
+          set -o pipefail
+          xcrun altool --upload-app -f "$IPA" -t ios -u "$APPLE_ID" -p "@env:APPLE_APP_PASSWORD" --output-format normal 2>&1 | tee altool-upload.log
+      - name: Remove signing keychain
+        if: always()
+        run: |
+          security delete-keychain "$RUNNER_TEMP/ent-signing.keychain-db" 2>/dev/null || true
+          rm -f "$RUNNER_TEMP/profile.mobileprovision" "$RUNNER_TEMP/profile.plist"
+      - name: Logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: appstore-manual-logs
+          path: |
+            xcode-archive.log
+            xcode-export.log
+            altool-upload.log
+          retention-days: 5
