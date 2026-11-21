@@ -6,7 +6,7 @@ on:
         description: Релиз с Xcode-экспортом (ENT-Xcode.zip.part*)
         default: ent-ios-source-20261029
 permissions:
-  contents: read
+  contents: write
 concurrency:
   group: ent-ios-preview
   cancel-in-progress: false
@@ -20,7 +20,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           mkdir source
-          gh release download "${{ inputs.source }}" --repo "$GITHUB_REPOSITORY" --pattern 'ENT-Xcode.zip.part*' --dir source
+          if ! gh release download "${{ inputs.source }}" --repo "$GITHUB_REPOSITORY" --pattern 'ENT-Xcode.zip.part*' --dir source; then
+            # A draft release (not public): find it by tag and fetch its assets through the API.
+            RID=$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq '.[] | select(.tag_name=="${{ inputs.source }}") | .id' | head -1)
+            test -n "$RID"
+            gh api "repos/$GITHUB_REPOSITORY/releases/$RID/assets?per_page=100" --jq '.[] | select(.name|startswith("ENT-Xcode.zip.part")) | [.id,.name] | @tsv' | while read -r AID ANAME; do
+              gh api -H "Accept: application/octet-stream" "repos/$GITHUB_REPOSITORY/releases/assets/$AID" > "source/$ANAME"
+            done
+          fi
+          ls -la source
           cat source/ENT-Xcode.zip.part* > source/ENT-Xcode.zip
           unzip -q source/ENT-Xcode.zip -d xcode
       - name: Restore executable permissions
